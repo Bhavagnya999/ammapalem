@@ -1,0 +1,6 @@
+{
+  "name": "Ammapalem Earth Observatory",
+  "description": "Satellite-based Earth observation and decade land change detection (2016–2026) for Ammapalem, Konijerla Mandal, Khammam, Telangana – 507305.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

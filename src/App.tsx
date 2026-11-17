@@ -5,12 +5,18 @@ import { SatelliteComparison } from './components/SatelliteComparison';
 import { ChangeDetectionSection } from './components/ChangeDetectionSection';
 import { LandCoverSection } from './components/LandCoverSection';
 import { DataSourcesSection } from './components/DataSourcesSection';
-import type { AnalysisResult, CatalogResponse, StacSceneSummary } from './types/earth';
+import type {
+  AdminBoundariesResponse,
+  AnalysisResult,
+  CatalogResponse,
+  StacSceneSummary,
+} from './types/earth';
 
 const CONFIDENCE_OPTIONS = [0.5, 0.55, 0.65, 0.75];
 
 export default function App() {
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
+  const [boundaries, setBoundaries] = useState<AdminBoundariesResponse | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [selectedPresetId, setSelectedPresetId] = useState<string>('');
   const [customPair, setCustomPair] = useState<{ s16: StacSceneSummary; s26: StacSceneSummary } | null>(null);
@@ -43,7 +49,10 @@ export default function App() {
       setLoading(true);
       setError(null);
       try {
-        const catRes = await fetch('/api/catalog');
+        const [catRes, bndRes] = await Promise.all([
+          fetch('/api/catalog'),
+          fetch('/api/boundaries').catch(() => null),
+        ]);
         const catJson = await catRes.json();
         if (!catRes.ok) {
           throw new Error(catJson.error || 'STAC catalog query failed');
@@ -51,6 +60,15 @@ export default function App() {
         if (cancelled) return;
         const cat = catJson as CatalogResponse;
         setCatalog(cat);
+
+        if (bndRes && bndRes.ok) {
+          try {
+            const bndJson = (await bndRes.json()) as AdminBoundariesResponse;
+            if (!cancelled) setBoundaries(bndJson);
+          } catch {
+            // Boundaries optional fallback handled in map components
+          }
+        }
 
         const defaultPreset = cat.presets[0];
         if (!defaultPreset) {
@@ -260,10 +278,15 @@ export default function App() {
         </section>
 
         {/* SECTION 2: PRIMARY INTERACTIVE BEFORE/AFTER COMPARISON */}
-        <SatelliteComparison analysis={analysis} loading={loading} error={error} />
+        <SatelliteComparison
+          analysis={analysis}
+          boundaries={boundaries}
+          loading={loading}
+          error={error}
+        />
 
         {/* SECTION 3: AUTOMATIC PIXEL-BASED CHANGE DETECTION */}
-        <ChangeDetectionSection analysis={analysis} loading={loading} />
+        <ChangeDetectionSection analysis={analysis} boundaries={boundaries} loading={loading} />
 
         {/* SECTION 4: LAND COVER ANALYSIS */}
         <LandCoverSection analysis={analysis} />

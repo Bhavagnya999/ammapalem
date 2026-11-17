@@ -270,3 +270,44 @@ export interface PixelProbeResult {
     landCover: string;
   } | null;
 }
+
+export interface VillageLabelItem {
+  name: string;
+  localName: string | null;
+  lgdCode: string | null;
+  lat: number;
+  lon: number;
+  areaKm2: number | null;
+  isTarget: boolean;
+}
+
+export interface AdminBoundaryMeta {
+  name: string;
+  localName?: string | null;
+  lgdCode: string | null;
+  parentLabel: string;
+  areaKm2: number | null;
+  pop2011?: number | null;
+  pop2026?: number | null;
+  bounds?: [number, number, number, number];
+}
+
+export interface AdminBoundariesResponse {
+  officialBoundariesAvailable: boolean;
+  source: string;
+  studyAreaLabel: string;
+  village: {
+    meta: AdminBoundaryMeta;
+    feature: GeoJSON.Feature;
+  } | null;
+  mandal: {
+    meta: AdminBoundaryMeta;
+    feature: GeoJSON.Feature;
+  } | null;
+  district: {
+    meta: AdminBoundaryMeta;
+    feature: GeoJSON.Feature;
+  } | null;
+  villageLabels: VillageLabelItem[];
+}
+

@@ -67,3 +67,42 @@
 input[type="range"] {
   accent-color: #8c9a6e;
 }
+
+/* Crisp haloed geographic labels over satellite imagery */
+.geo-village-label {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  pointer-events: none !important;
+}
+
+.geo-village-label-text {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
+  font-family: var(--font-sans);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-shadow:
+    0 1px 3px rgba(10, 11, 9, 0.98),
+    0 0 6px rgba(10, 11, 9, 0.95),
+    1px 0 2px rgba(10, 11, 9, 0.95),
+    -1px 0 2px rgba(10, 11, 9, 0.95);
+  pointer-events: none;
+}
+
+.leaflet-tooltip {
+  background-color: rgba(17, 18, 16, 0.94) !important;
+  border: 1px solid #3b3f36 !important;
+  color: #ebe7de !important;
+  font-family: var(--font-sans) !important;
+  font-size: 11px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45) !important;
+}
+
+.leaflet-tooltip-top::before {
+  border-top-color: #3b3f36 !important;
+}
+

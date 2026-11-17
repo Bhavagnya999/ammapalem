@@ -1,7 +1,13 @@
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { getCatalog, getLayerBuffer, probeCoordinate, runAnalysis } from './server/earthEngine.ts';
+import {
+  getAdminBoundaries,
+  getCatalog,
+  getLayerBuffer,
+  probeCoordinate,
+  runAnalysis,
+} from './server/earthEngine.ts';
 
 const PORT = Number(process.env.PORT || 3000);
 
@@ -11,6 +17,16 @@ async function startServer() {
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, service: 'Ammapalem Earth Observatory' });
+  });
+
+  app.get('/api/boundaries', async (_req, res) => {
+    try {
+      const boundaries = await getAdminBoundaries();
+      res.json(boundaries);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to fetch administrative boundaries';
+      res.status(502).json({ error: message });
+    }
   });
 
   app.get('/api/catalog', async (_req, res) => {

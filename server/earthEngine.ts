@@ -1686,3 +1686,286 @@ export function probeCoordinate(key: string, lat: number, lon: number) {
       : null,
   };
 }
+
+export interface VillageLabelItem {
+  name: string;
+  localName: string | null;
+  lgdCode: string | null;
+  lat: number;
+  lon: number;
+  areaKm2: number | null;
+  isTarget: boolean;
+}
+
+export interface AdminBoundaryMeta {
+  name: string;
+  localName?: string | null;
+  lgdCode: string | null;
+  parentLabel: string;
+  areaKm2: number | null;
+  pop2011?: number | null;
+  pop2026?: number | null;
+  bounds?: [number, number, number, number];
+}
+
+export interface AdminBoundariesResponse {
+  officialBoundariesAvailable: boolean;
+  source: string;
+  studyAreaLabel: string;
+  village: {
+    meta: AdminBoundaryMeta;
+    feature: GeoJSON.Feature;
+  } | null;
+  mandal: {
+    meta: AdminBoundaryMeta;
+    feature: GeoJSON.Feature;
+  } | null;
+  district: {
+    meta: AdminBoundaryMeta;
+    feature: GeoJSON.Feature;
+  } | null;
+  villageLabels: VillageLabelItem[];
+}
+
+let boundariesCache: AdminBoundariesResponse | null = null;
+
+function simplifyRing(ring: number[][], maxVertices: number): number[][] {
+  if (ring.length <= maxVertices) return ring;
+  const step = Math.ceil(ring.length / maxVertices);
+  const out: number[][] = [];
+  for (let i = 0; i < ring.length - 1; i += step) {
+    out.push([Number(ring[i][0].toFixed(5)), Number(ring[i][1].toFixed(5))]);
+  }
+  const first = out[0] ?? ring[0];
+  const last = out[out.length - 1];
+  if (last[0] !== first[0] || last[1] !== first[1]) {
+    out.push([...first]);
+  }
+  return out;
+}
+
+function simplifyGeoJsonGeometry(geometry: GeoJSON.Geometry, maxVerticesPerRing: number): GeoJSON.Geometry {
+  if (geometry.type === 'Polygon') {
+    return {
+      type: 'Polygon',
+      coordinates: geometry.coordinates.map((ring) => simplifyRing(ring, maxVerticesPerRing)),
+    };
+  }
+  if (geometry.type === 'MultiPolygon') {
+    return {
+      type: 'MultiPolygon',
+      coordinates: geometry.coordinates.map((poly) =>
+        poly.map((ring) => simplifyRing(ring, maxVerticesPerRing))
+      ),
+    };
+  }
+  return geometry;
+}
+
+function computeGeometryCentroidAndBounds(geometry: GeoJSON.Geometry): {
+  lat: number;
+  lon: number;
+  bounds: [number, number, number, number];
+} {
+  let rings: number[][][] = [];
+  if (geometry.type === 'Polygon') {
+    rings = [geometry.coordinates[0]];
+  } else if (geometry.type === 'MultiPolygon') {
+    // Pick largest outer ring for label centroid
+    let bestRing: number[][] = geometry.coordinates[0][0];
+    let bestLen = 0;
+    for (const poly of geometry.coordinates) {
+      if (poly[0].length > bestLen) {
+        bestLen = poly[0].length;
+        bestRing = poly[0];
+      }
+      rings.push(poly[0]);
+    }
+    rings = [bestRing, ...rings.filter((r) => r !== bestRing)];
+  }
+
+  let minLon = Infinity;
+  let minLat = Infinity;
+  let maxLon = -Infinity;
+  let maxLat = -Infinity;
+  for (const r of rings) {
+    for (const pt of r) {
+      if (pt[0] < minLon) minLon = pt[0];
+      if (pt[1] < minLat) minLat = pt[1];
+      if (pt[0] > maxLon) maxLon = pt[0];
+      if (pt[1] > maxLat) maxLat = pt[1];
+    }
+  }
+
+  // Polygon centroid via shoelace formula on primary ring
+  const primary = rings[0] || [];
+  let signedArea = 0;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < primary.length - 1; i++) {
+    const [x0, y0] = primary[i];
+    const [x1, y1] = primary[i + 1];
+    const a = x0 * y1 - x1 * y0;
+    signedArea += a;
+    cx += (x0 + x1) * a;
+    cy += (y0 + y1) * a;
+  }
+  if (Math.abs(signedArea) > 1e-12) {
+    const factor = 1 / (3 * signedArea);
+    return {
+      lon: Number((cx * factor).toFixed(5)),
+      lat: Number((cy * factor).toFixed(5)),
+      bounds: [minLon, minLat, maxLon, maxLat],
+    };
+  }
+  return {
+    lon: Number(((minLon + maxLon) / 2).toFixed(5)),
+    lat: Number(((minLat + maxLat) / 2).toFixed(5)),
+    bounds: [minLon, minLat, maxLon, maxLat],
+  };
+}
+
+async function fetchLivingAtlasGeoJson(url: string): Promise<GeoJSON.FeatureCollection | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return null;
+    const contentType = res.headers.get('content-type') || '';
+    const text = await res.text();
+    if (!text.trim().startsWith('{') && !contentType.includes('json')) {
+      return null;
+    }
+    const parsed = JSON.parse(text) as GeoJSON.FeatureCollection;
+    if (!parsed || parsed.type !== 'FeatureCollection' || !Array.isArray(parsed.features)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export async function getAdminBoundaries(): Promise<AdminBoundariesResponse> {
+  if (boundariesCache) return boundariesCache;
+
+  const { lat, lon } = STUDY_LOCATION.center;
+  const ptGeom = encodeURIComponent(`${lon},${lat}`);
+
+  const villageUrl = `https://livingatlas.esri.in/server/rest/services/IAB2024/Village_Projected_Population_2024/MapServer/0/query?geometry=${ptGeom}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=name,subdistrict,district,state,lgd_villagecode,villagename_locallang,tot_p_2011,tot_p_2026,st_area(shape)&returnGeometry=true&outSR=4326&f=geojson`;
+  const mandalUrl = `https://livingatlas.esri.in/server/rest/services/IAB2024/Sub_District_Projected_Population_2024/MapServer/0/query?geometry=${ptGeom}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=name,district,state,lgd_subdistrictcode,st_area(shape)&returnGeometry=true&outSR=4326&f=geojson`;
+  const districtUrl = `https://livingatlas.esri.in/server/rest/services/IAB2024/District_Projected_Population_2024/MapServer/0/query?geometry=${ptGeom}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=name,state,lgd_districtcode,st_area(shape)&returnGeometry=true&outSR=4326&f=geojson`;
+  const mandalVillagesUrl = `https://livingatlas.esri.in/server/rest/services/IAB2024/Village_Projected_Population_2024/MapServer/0/query?where=${encodeURIComponent("subdistrict='Konijerla' AND district='Khammam'")}&outFields=name,lgd_villagecode,villagename_locallang,st_area(shape)&returnGeometry=true&outSR=4326&f=geojson`;
+
+  const [villageFc, mandalFc, districtFc, nearbyFc] = await Promise.all([
+    fetchLivingAtlasGeoJson(villageUrl),
+    fetchLivingAtlasGeoJson(mandalUrl),
+    fetchLivingAtlasGeoJson(districtUrl),
+    fetchLivingAtlasGeoJson(mandalVillagesUrl),
+  ]);
+
+  let villageResult: AdminBoundariesResponse['village'] = null;
+  const vFeat = villageFc?.features?.[0];
+  if (vFeat?.geometry) {
+    const props = (vFeat.properties || {}) as Record<string, unknown>;
+    const { bounds } = computeGeometryCentroidAndBounds(vFeat.geometry);
+    const areaM2 = Number(props['st_area(shape)'] ?? props['Shape_Area'] ?? 0);
+    villageResult = {
+      meta: {
+        name: String(props.name || 'Ammapalem'),
+        localName: props.villagename_locallang ? String(props.villagename_locallang) : null,
+        lgdCode: props.lgd_villagecode ? String(props.lgd_villagecode) : null,
+        parentLabel: `${props.subdistrict || 'Konijerla'} Mandal · ${props.district || 'Khammam'} District`,
+        areaKm2: areaM2 > 0 ? Number((areaM2 / 1e6).toFixed(2)) : null,
+        pop2011: props.tot_p_2011 != null ? Number(props.tot_p_2011) : null,
+        pop2026: props.tot_p_2026 != null ? Number(props.tot_p_2026) : null,
+        bounds,
+      },
+      feature: {
+        type: 'Feature',
+        properties: { name: String(props.name || 'Ammapalem'), level: 'village' },
+        geometry: vFeat.geometry,
+      },
+    };
+  }
+
+  let mandalResult: AdminBoundariesResponse['mandal'] = null;
+  const mFeat = mandalFc?.features?.[0];
+  if (mFeat?.geometry) {
+    const props = (mFeat.properties || {}) as Record<string, unknown>;
+    const areaM2 = Number(props['st_area(shape)'] ?? props['Shape_Area'] ?? 0);
+    mandalResult = {
+      meta: {
+        name: String(props.name || 'Konijerla'),
+        lgdCode: props.lgd_subdistrictcode ? String(props.lgd_subdistrictcode) : null,
+        parentLabel: `${props.district || 'Khammam'} District · ${props.state || 'Telangana'}`,
+        areaKm2: areaM2 > 0 ? Number((areaM2 / 1e6).toFixed(2)) : null,
+      },
+      feature: {
+        type: 'Feature',
+        properties: { name: String(props.name || 'Konijerla'), level: 'mandal' },
+        geometry: simplifyGeoJsonGeometry(mFeat.geometry, 350),
+      },
+    };
+  }
+
+  let districtResult: AdminBoundariesResponse['district'] = null;
+  const dFeat = districtFc?.features?.[0];
+  if (dFeat?.geometry) {
+    const props = (dFeat.properties || {}) as Record<string, unknown>;
+    const areaM2 = Number(props['st_area(shape)'] ?? props['Shape_Area'] ?? 0);
+    districtResult = {
+      meta: {
+        name: String(props.name || 'Khammam'),
+        lgdCode: props.lgd_districtcode ? String(props.lgd_districtcode) : null,
+        parentLabel: String(props.state || 'Telangana'),
+        areaKm2: areaM2 > 0 ? Number((areaM2 / 1e6).toFixed(2)) : null,
+      },
+      feature: {
+        type: 'Feature',
+        properties: { name: String(props.name || 'Khammam'), level: 'district' },
+        geometry: simplifyGeoJsonGeometry(dFeat.geometry, 480),
+      },
+    };
+  }
+
+  const villageLabels: VillageLabelItem[] = [];
+  if (nearbyFc?.features) {
+    for (const f of nearbyFc.features) {
+      if (!f.geometry || !f.properties) continue;
+      const props = f.properties as Record<string, unknown>;
+      const name = String(props.name || '').trim();
+      if (!name) continue;
+      const { lat: cLat, lon: cLon } = computeGeometryCentroidAndBounds(f.geometry);
+      const areaM2 = Number(props['st_area(shape)'] ?? 0);
+      villageLabels.push({
+        name,
+        localName: props.villagename_locallang ? String(props.villagename_locallang) : null,
+        lgdCode: props.lgd_villagecode ? String(props.lgd_villagecode) : null,
+        lat: cLat,
+        lon: cLon,
+        areaKm2: areaM2 > 0 ? Number((areaM2 / 1e6).toFixed(2)) : null,
+        isTarget: name.toLowerCase() === 'ammapalem' || String(props.lgd_villagecode) === '579755',
+      });
+    }
+  }
+
+  const officialAvailable = Boolean(villageResult);
+  const response: AdminBoundariesResponse = {
+    officialBoundariesAvailable: officialAvailable,
+    source: officialAvailable
+      ? 'Esri India Living Atlas · IAB2024 Administrative Boundaries (LGD / Census)'
+      : 'Approximate Study Area Grid (Official boundary upstream unreachable)',
+    studyAreaLabel: officialAvailable
+      ? 'Approximate Study Area (6 × 6 km Analysis Grid)'
+      : 'Approximate Study Area (Official village boundary unavailable)',
+    village: villageResult,
+    mandal: mandalResult,
+    district: districtResult,
+    villageLabels,
+  };
+
+  if (officialAvailable) {
+    boundariesCache = response;
+  }
+  return response;
+}
+
